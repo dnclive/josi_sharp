@@ -8,15 +8,15 @@ using System.Threading;
 using System.Runtime.Remoting.Messaging;
 using System.Windows.Forms;
 using System.Collections;
-using josi;
-using Community.CsharpSqlite;
-using Community.CsharpSqlite.SQLiteClient;
-using tlib;
+//using josi;
+//using Community.CsharpSqlite;
+//using Community.CsharpSqlite.SQLiteClient;
+using kibicom.tlib;
 
-namespace josi
+namespace kibicom.josi
 {
 
-	public class t_store
+	public class t_store:t
 	{
 
 		//врем€ в милесекундах начала выполнени€ запроса к серверу
@@ -26,13 +26,13 @@ namespace josi
 
 		string cookie = "";//"kvl.1.tab_session_log.id=1320";// "kvl.1.tab_session_log.id=1320; path=/";
 
-		string req_uri = "http://kibicom.com/order_store_33/order_store/index.php?";
+		string req_uri = "http://kibicom.com/order_store_33/order_store/index.php";
 
 		t auth_args;
 
 		public t_store()
 		{
-
+			this["josi_end_point"] = new t("http://kibicom.com/order_store_33/order_store/index.php");
 		}
 		/*
 		public t_josi_store(t_josi_auth_args args)
@@ -45,31 +45,125 @@ namespace josi
 		public t_store(t args)
 		{
 			auth_args = args;
-			f_login(args);
+			this["josi_end_point"] = args["josi_end_point"];
+			this["req_timeout"] = args["req_timeout"];
+			if (args["login_on_cre"].f_val<bool>())
+			{
+				f_login(args);
+			}
 		}
+
+		#region on_needs
+
+		private event t_f<t, t> on_needs_done;
+
+		//функци€ которую вызывают, когда выполнено что то 
+		//что может быть needs дл€ вызывающего кода
+		private t f_raise_on_needs_done(t args)
+		{
+			int need_i = 0;
+			foreach (t need in (IList<t>)this["on_needs"])
+			{
+				bool is_needs_done = true;
+				foreach (t f_need in (IList<t>)need["f_needs"])
+				{
+					//провер€ем текущие значени€ по требуемым ключам
+					//по умолчанию считаем что false
+					is_needs_done &= this[f_need.f_str()].f_def(false).f_val<bool>();
+				}
+
+				//если дл€ данной функции все потребоности удовлетварены
+				//вызывае ее
+				if (is_needs_done)
+				{
+					t.f_f("f_needs_done", need["f_args"]);
+					//need[need_i].f_drop(
+				}
+
+				
+				need_i++;
+			}
+
+			return new t();
+
+			if (on_needs_done != null)
+			{
+				on_needs_done(args);
+			}
+
+			
+		}
+
+		//ставить задачи  в очередь на выполнение
+		//когда будут выполнены все необходимые услови€
+		private t f_check_all_needs(t args)
+		{
+			t needs = args["needs"].f_def(null);
+
+			//если нет никаких требований
+			//просто выполн€ем функцию
+			if (needs.Count == 0)
+			{
+				t.f_f("f_needs_done", args);
+				return new t();
+			}
+
+			t_f<t, t> f_needs_done = args["f_needs_done"].f_f();
+
+			//создаем новый callback
+			this["on_needs"].Add(new t()
+			{
+				{"f",f_needs_done},
+				{"f_args",args},
+				{"f_needs",needs}
+			});
+
+			//провер€ем needs
+			f_raise_on_needs_done(new t());
+
+			//цепл€ем событие на needs...
+			//on_needs_done += new t_f<t, t>(f_needs_done);
+
+			return new t();
+		}
+
+		#endregion on_needs
 
 		#region работа с базой
 
-		
+
 
 		#region запросы к josi
 
 		//выполн€ет запрос получени€/созранени€ данных в josi store
-		public void f_store(t args)
+		public t f_store(t args)
 		{
-			string josi_store_get_put_query = "kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str();
-			args["query_str"] = new t(josi_store_get_put_query);
-
-			if (args["cancel_prev"].f_bool())
+			//выполн€ем запрос когда выполнены все необходимые услови€
+			//создаем новые аргкументы в них закидываем все из прин€тых
+			//и докидываем f_needs_done
+			f_check_all_needs(new t().f_add(true, args).f_add(true, new t()
 			{
-				long now_utc = DateTime.Now.ToFileTimeUtc();
-				josi_store_query_start = new TimeSpan(now_utc);
-				args["query_start"] = new t(new TimeSpan(now_utc));
-			}
+				{
+					"f_needs_done", new t_f<t,t>(delegate(t args1)
+					{
+						string josi_store_get_put_query = "kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str();
+						args["query_str"] = new t(josi_store_get_put_query);
 
-			f_get_store_data(args);
+						if (args["cancel_prev"].f_bool())
+						{
+							long now_utc = DateTime.Now.ToFileTimeUtc();
+							josi_store_query_start = new TimeSpan(now_utc);
+							args["query_start"] = new t(new TimeSpan(now_utc));
+						}
 
-			return;
+						f_get_store_data(args);
+
+						return new t();
+					})
+				}
+			}));
+
+			return this;
 
 		}
 
@@ -77,16 +171,31 @@ namespace josi
 		//выполн€ет произвольные запрос к josi
 		public void f_query(t args)
 		{
-			args["query_str"] = new t(args["dot_key_query_str"].f_str());
+			//копируем значение query_str
+			args["query_str"] = new t(args["res_dot_key_query_str"].f_str());
 
-			if (args["cancel_prev"].f_val<bool>())
+			//выполн€ем запрос когда выполнены все необходимые услови€
+			f_check_all_needs(new t().f_add(true, args).f_add(true, new t()
 			{
-				long now_utc = DateTime.Now.ToFileTimeUtc();
-				josi_store_query_start = new TimeSpan(now_utc);
-				args["query_start"] = new t(new TimeSpan(now_utc));
-			}
+				{
+					"f_needs_done", new t_f<t,t>(delegate(t args1)
+					{
 
-			f_get_store_data(args);
+						if (args["cancel_prev"].f_val<bool>())
+						{
+							long now_utc = DateTime.Now.ToFileTimeUtc();
+							josi_store_query_start = new TimeSpan(now_utc);
+							args["query_start"] = new t(new TimeSpan(now_utc));
+						}
+
+						//MessageBox.Show(args["query_str"].f_str());
+
+						f_get_store_data(args);
+
+						return new t();
+					})
+				}
+			}));
 
 			return;
 
@@ -138,7 +247,7 @@ namespace josi
 
 
 		//выпон€ет авторизацию пользовател€ в josi
-		private bool f_login(t args)
+		public bool f_login(t args)
 		{
 			//если текущее подключение еще не авторизовано то пробуем авторизоватьс€
 			if (!args["authenticated"].f_val<bool>())
@@ -151,10 +260,9 @@ namespace josi
 				{
 					{"res_dot_key_query_str",res_dot_key_query_str},
 					{
-						"f_done",
-						new t_f<t,t>(delegate(t args1)
+						"f_done", new t_f<t,t>(delegate(t args1)
 						{
-							//MessageBox.Show(args1.resp_str);
+							//MessageBox.Show(f_get_val_from_json_obj(args1["resp_json"].f_val(), "session.tab_login.id").ToString());
 
 							args["tab_login"] = new t()
 							{
@@ -170,14 +278,24 @@ namespace josi
 							if (args["tab_login"]["login"].f_str() == args["login_name"].f_str())
 							{
 								args["authenticated"] = new t(true);
+								this["is_auth"] = new t(true);
+								f_f("f_done", args);
 							}
 							else
 							{
 								//josi_msg_box.fshow("ќтказ в авторизации. ќбратитесь к администратору!", "ќ ", "–едактировать");
-
+								args["authenticated"] = new t(false);
+								this["is_auth"] = new t(false);
+								f_f("f_fail", args);
 							}
 
-							t_uti.f_fdone(args1);
+							//t_uti.f_fdone(args);
+
+							//f_f("f_done", args);
+
+							//вызываем событие изменени€ needs
+							f_raise_on_needs_done(new t());
+
 							return null;
 						})
 					},
@@ -199,13 +317,17 @@ namespace josi
 
 		private void f_get_store_data(t args)
 		{
+			
+			//string req_srt = req_uri + args["query_str"].f_str();
+			string req_str = this["josi_end_point"].f_str() + "?" + args["query_str"].f_str();
+			
+			//timeout соединени€
+			int timeout = this["req_timeout"].f_def(args["req_timeout"].f_val()).f_def(10000).f_val<int>();
 
-			string req_srt = req_uri + args["query_str"].f_str();
-
-			//MessageBox.Show(req_url);
+			//MessageBox.Show(req_str);
 
 			//наш http запрос к серверу формируетс€ из адреса дл€ запросов и предаваемого запроса query_str
-			args["req"] = new t((HttpWebRequest)WebRequest.Create(req_srt));
+			args["req"] = new t((HttpWebRequest)WebRequest.Create(req_str));
 
 			if (1 == 0)
 			{
@@ -227,7 +349,7 @@ namespace josi
 				}
 
 				//таймаут запроса
-				args["req"].f_val<HttpWebRequest>().Timeout = 10000;
+				args["req"].f_val<HttpWebRequest>().Timeout = timeout;
 
 				//принимать любые сертификаты
 				System.Net.ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
@@ -263,8 +385,16 @@ namespace josi
 							//MessageBox.Show("123");
 							response.Close();
 
+							f_f("f_canceled", args);
+
 							//t_uti.f_fdone(args);
 							return;
+						}
+
+
+						if (response.StatusCode != HttpStatusCode.OK)
+						{
+							f_f("f_fail", args);
 						}
 
 						//если сервер прислал новый cookie то берем его иначе оставл€ем тот что хранитс€ на текущий момент
@@ -279,10 +409,15 @@ namespace josi
 
 						args["resp_str"] = new t(resp_str);
 
+						//MessageBox.Show(resp_str);
+
 						//if (args.encode_json)
 						{
 							args["resp_json"] = new t((Dictionary<string, object>)JsonParser.JsonDecode(resp_str));
-							t_uti.f_fdone(args);
+							//t_uti.f_fdone(args);
+
+							f_f("f_done", args);
+
 							//(args["fdone"].f)(args);	
 
 						}
@@ -293,7 +428,7 @@ namespace josi
 						dataStream.Close();
 						response.Close();
 
-						t_uti.f_fdone(args);
+						//t_uti.f_fdone(args);
 
 					}
 					catch (Exception ex)
@@ -303,6 +438,7 @@ namespace josi
 						//				"ѕроверьте подключение к интернету.",
 						//				"ќшибка св€зи с серевером",
 						//				MessageBoxButtons.OK, MessageBoxIcon.Error);
+						f_f("f_fail", args);
 						return;
 					}
 					return;
@@ -381,6 +517,7 @@ namespace josi
 		#endregion json_dot_val
 	}
 
+	/*
 	class local
 	{
 		public local(string db_file_name)
@@ -389,5 +526,5 @@ namespace josi
 			SqliteConnection con = new SqliteConnection();
 		}
 	}
-
+	*/
 }
