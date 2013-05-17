@@ -12,6 +12,7 @@ using System.Collections;
 //using Community.CsharpSqlite;
 //using Community.CsharpSqlite.SQLiteClient;
 using kibicom.tlib;
+using System.Data;
 
 namespace kibicom.josi
 {
@@ -46,7 +47,7 @@ namespace kibicom.josi
 		{
 			auth_args = args;
 			this["josi_end_point"] = args["josi_end_point"];
-			this["req_timeout"] = args["req_timeout"];
+			this["req_timeout"] = args["req_timeout"].f_def(10000);
 			if (args["login_on_cre"].f_val<bool>())
 			{
 				f_login(args);
@@ -61,9 +62,11 @@ namespace kibicom.josi
 		//что может быть needs для вызывающего кода
 		private t f_raise_on_needs_done(t args)
 		{
-			int need_i = 0;
-			foreach (t need in (IList<t>)this["on_needs"])
+			int i = 0;
+			while (i<this["on_needs"].Count)
+			//foreach (t need in (IList<t>)this["on_needs"])
 			{
+				t need = this["on_needs"][i];
 				bool is_needs_done = true;
 				foreach (t f_need in (IList<t>)need["f_needs"])
 				{
@@ -77,11 +80,13 @@ namespace kibicom.josi
 				if (is_needs_done)
 				{
 					t.f_f("f_needs_done", need["f_args"]);
-					//need[need_i].f_drop(
+					this["on_needs"].f_drop(need);
 				}
-
+				else
+				{
+					i++;
+				}
 				
-				need_i++;
 			}
 
 			return new t();
@@ -146,7 +151,9 @@ namespace kibicom.josi
 				{
 					"f_needs_done", new t_f<t,t>(delegate(t args1)
 					{
-						string josi_store_get_put_query = "kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str();
+						string josi_store_get_put_query = 
+							"kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str()+
+							"&kvl.1.debug_group="+args["debug_group"].f_def(false);
 						args["query_str"] = new t(josi_store_get_put_query);
 
 						if (args["cancel_prev"].f_bool())
@@ -154,6 +161,24 @@ namespace kibicom.josi
 							long now_utc = DateTime.Now.ToFileTimeUtc();
 							josi_store_query_start = new TimeSpan(now_utc);
 							args["query_start"] = new t(new TimeSpan(now_utc));
+						}
+
+						if (args["method"].f_str().ToLower()=="post")
+						{
+							args["post_t"].f_def_set("").f_set(new t()
+							{
+								{
+									"kvl", new t()
+									{
+										new t(){{"key","val"}},
+										new t()
+										{
+											{"tab_arr", args["put_tab_arr"]},
+											{"where", args["get_tab_arr"]}
+										}
+									}
+								}
+							});
 						}
 
 						f_get_store_data(args);
@@ -167,7 +192,6 @@ namespace kibicom.josi
 
 		}
 
-
 		//выполняет произвольные запрос к josi
 		public void f_query(t args)
 		{
@@ -180,8 +204,11 @@ namespace kibicom.josi
 				{
 					"f_needs_done", new t_f<t,t>(delegate(t args1)
 					{
-
-						if (args["cancel_prev"].f_val<bool>())
+						if (args["is_need_auth"].f_def(false).f_bool()&&!this["authenticated"].f_def(false).f_bool())
+						{
+							t.f_f("f_fail", args);
+						}
+						if (args["cancel_prev"].f_bool())
 						{
 							long now_utc = DateTime.Now.ToFileTimeUtc();
 							josi_store_query_start = new TimeSpan(now_utc);
@@ -249,6 +276,8 @@ namespace kibicom.josi
 		//выпоняет авторизацию пользователя в josi
 		public bool f_login(t args)
 		{
+			int auth_try_count = args["auth_try_count"].f_int();
+
 			//если текущее подключение еще не авторизовано то пробуем авторизоваться
 			if (!args["authenticated"].f_val<bool>())
 			{
@@ -278,14 +307,16 @@ namespace kibicom.josi
 							if (args["tab_login"]["login"].f_str() == args["login_name"].f_str())
 							{
 								args["authenticated"] = new t(true);
-								this["is_auth"] = new t(true);
+								this["authenticated"] = new t(true);
+								this["is_auth_done"] = new t(true);
 								f_f("f_done", args);
 							}
 							else
 							{
 								//josi_msg_box.fshow("Отказ в авторизации. Обратитесь к администратору!", "ОК", "Редактировать");
 								args["authenticated"] = new t(false);
-								this["is_auth"] = new t(false);
+								this["authenticated"] = new t(false);
+								this["is_auth_done"] = new t(true);
 								f_f("f_fail", args);
 							}
 
@@ -297,6 +328,24 @@ namespace kibicom.josi
 							f_raise_on_needs_done(new t());
 
 							return null;
+						})
+					},
+					{
+						"f_fail", new t_f<t,t>(delegate(t args1)
+						{
+							args["authenticated"] = new t(false);
+							this["authenticated"] = new t(false);
+							this["is_auth_done"] = new t(true);
+							f_f("f_fail", args);
+							
+							if (args["auth_try_count_done"].f_def_set(1).f_inc().f_int()<=args["auth_try_count"].f_int())
+							{
+								f_login(args);
+							}
+
+							//вызываем событие изменения needs
+							f_raise_on_needs_done(new t());
+							return new t();
 						})
 					},
 					{"encode_json",true},
@@ -322,12 +371,32 @@ namespace kibicom.josi
 			string req_str = this["josi_end_point"].f_str() + "?" + args["query_str"].f_str();
 			
 			//timeout соединения
-			int timeout = this["req_timeout"].f_def(args["req_timeout"].f_val()).f_def(10000).f_val<int>();
+			int timeout = this["req_timeout"].f_def(args["req_timeout"].f_val()).f_def(10000).f_int();
 
+			//метод запроса
+			string method = args["method"].f_def("GET").f_str();
+
+			//отправляемые данные в виде объекта t
+
+			t post_t = args["post_t"];
+
+			string post_data_str = args["post_data_str"].f_str();
+
+			if (post_data_str == "" && post_t != null)
+			{
+				post_data_str = post_t.f_json().f_get("json_str").f_str();
+			}
+
+			//MessageBox.Show(post_data_str);
+
+			//timeout = 1000;
 			//MessageBox.Show(req_str);
 
 			//наш http запрос к серверу формируется из адреса для запросов и предаваемого запроса query_str
-			args["req"] = new t((HttpWebRequest)WebRequest.Create(req_str));
+			HttpWebRequest req = (HttpWebRequest)WebRequest.Create(req_str);
+
+			args["req"] = new t((HttpWebRequest)req);
+
 
 			if (1 == 0)
 			{
@@ -345,14 +414,30 @@ namespace kibicom.josi
 				// передаем cookie, полученные в предыдущем запросе
 				if (!String.IsNullOrEmpty(cookie))
 				{
-					args["req"].f_val<HttpWebRequest>().Headers.Add(HttpRequestHeader.Cookie, cookie);
+					req.Headers.Add(HttpRequestHeader.Cookie, cookie);
 				}
 
 				//таймаут запроса
-				args["req"].f_val<HttpWebRequest>().Timeout = timeout;
+				req.Timeout = timeout;
 
 				//принимать любые сертификаты
 				System.Net.ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
+
+				if (method.ToLower() == "post")
+				{
+					//header
+					req.ContentType = "text/plain";
+
+					//метод запроса
+					req.Method = method;
+
+					byte[] byteArray = Encoding.UTF8.GetBytes(post_data_str);
+					req.ContentLength = byteArray.Length;
+					Stream datastream = req.GetRequestStream();
+					datastream.Write(byteArray, 0, byteArray.Length);
+					datastream.Close();
+
+				}
 
 				//делегат вызова функции отправки запроса на сервер и получения ответа
 				//hwr_delegate hwr_dlg = new hwr_delegate(f_get_response);
