@@ -46,6 +46,8 @@ namespace kibicom.josi
 		public t_store(t args)
 		{
 			auth_args = args;
+			//запонимаем входные параметры
+			this.f_add(true, args);
 			this["josi_end_point"] = args["josi_end_point"];
 			this["req_timeout"] = args["req_timeout"].f_def(10000);
 			if (args["login_on_cre"].f_val<bool>())
@@ -151,9 +153,13 @@ namespace kibicom.josi
 				{
 					"f_needs_done", new t_f<t,t>(delegate(t args1)
 					{
+						if (args["is_need_auth"].f_def(false).f_bool() && !this["authenticated"].f_def(false).f_bool())
+						{
+							t.f_f("f_fail", args);
+						}
 						string josi_store_get_put_query = 
 							"kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str()+
-							"&kvl.1.debug_group="+args["debug_group"].f_def(false);
+							"&debug_group="+args["debug_group"].f_def("");
 						args["query_str"] = new t(josi_store_get_put_query);
 
 						if (args["cancel_prev"].f_bool())
@@ -304,7 +310,7 @@ namespace kibicom.josi
 								}
 							};
 
-							if (args["tab_login"]["login"].f_str() == args["login_name"].f_str())
+							if (args["tab_login"]["login"].f_str().ToLower() == args["login_name"].f_str().ToLower())
 							{
 								args["authenticated"] = new t(true);
 								this["authenticated"] = new t(true);
@@ -518,7 +524,7 @@ namespace kibicom.josi
 					}
 					catch (Exception ex)
 					{
-						//MessageBox.Show(ex.Message);
+						MessageBox.Show(ex.Message);
 						//MessageBox.Show("Не удалось связаться с сервером.\n\r" +
 						//				"Проверьте подключение к интернету.",
 						//				"Ошибка связи с серевером",
