@@ -155,7 +155,15 @@ namespace kibicom.josi
 					{
 						if (args["is_need_auth"].f_def(false).f_bool() && !this["authenticated"].f_def(false).f_bool())
 						{
-							t.f_f("f_fail", args);
+							t.f_f("f_fail", args.f_add(true, new t()
+							{
+								{
+									"err", new t()
+									{
+										{ "message", "не удалась авторизация"}
+									}
+								}
+							}));
 						}
 						string josi_store_get_put_query = 
 							"kvl.0.f={store_get_struct,store_put_struct}" + args["res_dot_key_query_str"].f_str()+
@@ -187,9 +195,9 @@ namespace kibicom.josi
 							});
 						}
 
-						f_get_store_data(args);
+						
 
-						return new t();
+						return f_get_store_data(args);
 					})
 				}
 			}));
@@ -223,9 +231,8 @@ namespace kibicom.josi
 
 						//MessageBox.Show(args["query_str"].f_str());
 
-						f_get_store_data(args);
 
-						return new t();
+						return f_get_store_data(args);
 					})
 				}
 			}));
@@ -282,7 +289,9 @@ namespace kibicom.josi
 		//выпоняет авторизацию пользователя в josi
 		public bool f_login(t args)
 		{
-			int auth_try_count = args["auth_try_count"].f_int();
+			int auth_try_count = args["auth_try_count"].f_def(3).f_int();
+			int auth_try_timeout=args["auth_try_timeout"].f_def(1500).f_int();
+			int auth_relogin_delay=args["auth_relogin_delay"].f_def(100000).f_int();
 
 			//если текущее подключение еще не авторизовано то пробуем авторизоваться
 			if (!args["authenticated"].f_val<bool>())
@@ -294,6 +303,7 @@ namespace kibicom.josi
 				f_query(new t()
 				{
 					{"res_dot_key_query_str",res_dot_key_query_str},
+					//{"req_timeout", auth_try_timeout},
 					{
 						"f_done", new t_f<t,t>(delegate(t args1)
 						{
@@ -342,11 +352,36 @@ namespace kibicom.josi
 							args["authenticated"] = new t(false);
 							this["authenticated"] = new t(false);
 							this["is_auth_done"] = new t(true);
-							f_f("f_fail", args);
 							
-							if (args["auth_try_count_done"].f_def_set(1).f_inc().f_int()<=args["auth_try_count"].f_int())
+							//теперь неудачная попытка не считается  fail
+							//просто пробуем еще раз
+							//f_f("f_fail", args);
+							
+							//если попытки подключения еще не исчерпаны
+							if (args["auth_try_count_done"].f_def_set(0).f_inc().f_int()<=args["auth_try_count"].f_int())
 							{
-								f_login(args);
+								this["login_timer"].f_set(new System.Threading.Timer(new TimerCallback(delegate(object args5)
+								{
+									this["login_timer"].f_val<System.Threading.Timer>().Dispose();
+
+									f_login(args);
+
+								}), args, auth_try_timeout, auth_try_timeout));
+							}
+							else
+							{
+								//иначе запускаем таймер с задержкой auth_relogin_delay
+								//после чего пробуем опять залогиниться auth_try_count раз
+								// и так до бесконечности
+								this["login_timer"].f_set(new System.Threading.Timer(new TimerCallback(delegate(object args5)
+								{
+									this["login_timer"].f_val<System.Threading.Timer>().Dispose();
+									
+									args["auth_try_count_done"].f_set(0);
+
+									f_login(args);
+
+								}), args, auth_relogin_delay, auth_relogin_delay));
 							}
 
 							//вызываем событие изменения needs
@@ -370,17 +405,19 @@ namespace kibicom.josi
 		#endregion
 
 
-		private void f_get_store_data(t args)
+		private t f_get_store_data(t args)
 		{
 			
 			//string req_srt = req_uri + args["query_str"].f_str();
 			string req_str = this["josi_end_point"].f_str() + "?" + args["query_str"].f_str();
 			
 			//timeout соединения
-			int timeout = this["req_timeout"].f_def(args["req_timeout"].f_val()).f_def(10000).f_int();
+			int timeout = args["req_timeout"].f_def(this["req_timeout"].f_val()).f_def(10000).f_int();
 
 			//метод запроса
 			string method = args["method"].f_def("GET").f_str();
+
+			bool sync = args["sync"].f_bool();
 
 			//отправляемые данные в виде объекта t
 
@@ -455,7 +492,8 @@ namespace kibicom.josi
 					return new t();
 				};
 
-				IAsyncResult ar = (new t_f(delegate()
+				//IAsyncResult ar = (new t_f(delegate()
+				t_f f = (new t_f(delegate()
 				{
 					//t_josi_store_req_args args = (t_josi_store_req_args)res.AsyncState;
 
@@ -463,7 +501,7 @@ namespace kibicom.josi
 
 					//MessageBox.Show(josi_store_query_start.Ticks.ToString());
 
-					
+
 
 					HttpWebResponse response;
 					try
@@ -485,7 +523,15 @@ namespace kibicom.josi
 
 						if (response.StatusCode != HttpStatusCode.OK)
 						{
-							f_f("f_fail", args);
+							f_f("f_fail", args.f_add(true, new t()
+							{
+								{
+									"err", new t()
+									{
+										{ "message", "http запрос вернул "+response.StatusCode.ToString()}
+									}
+								}
+							}));
 						}
 
 						//если сервер прислал новый cookie то берем его иначе оставляем тот что хранится на текущий момент
@@ -524,16 +570,27 @@ namespace kibicom.josi
 					}
 					catch (Exception ex)
 					{
-						MessageBox.Show(ex.Message);
+						//MessageBox.Show(ex.Message);
 						//MessageBox.Show("Не удалось связаться с сервером.\n\r" +
 						//				"Проверьте подключение к интернету.",
 						//				"Ошибка связи с серевером",
 						//				MessageBoxButtons.OK, MessageBoxIcon.Error);
-						f_f("f_fail", args);
+						f_f("f_fail", args.f_add(true, new t()
+						{
+							{
+								"err", new t()
+								{
+									{ "message", "http request failed" },
+									{ "ex", ex},
+								}
+							}
+						}));
 						return;
 					}
 					return;
-				})).BeginInvoke(new AsyncCallback(delegate(IAsyncResult iar)
+				}));
+				/*
+				.BeginInvoke(new AsyncCallback(delegate(IAsyncResult iar)
 				{
 					// Retrieve the delegate.
 
@@ -543,8 +600,27 @@ namespace kibicom.josi
 					// Call EndInvoke to retrieve the results.
 					caller.EndInvoke(iar);
 				}), null);
+				 * */
 
-				return;
+				if (sync)
+				{
+					f.Invoke();
+				}
+				else
+				{
+					f.BeginInvoke(new AsyncCallback(delegate(IAsyncResult iar)
+					{
+						// Retrieve the delegate.
+
+						AsyncResult result = (AsyncResult)iar;
+						t_f caller = (t_f)result.AsyncDelegate;
+
+						// Call EndInvoke to retrieve the results.
+						caller.EndInvoke(iar);
+					}), null);
+				}
+
+				return args;
 			}
 		}
 
